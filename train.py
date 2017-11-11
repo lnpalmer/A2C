@@ -41,12 +41,14 @@ def train(args, net, optimizer, cuda):
             if cuda: rewards = rewards.cuda()
 
             steps.append((rewards, masks, actions, policies, values))
+            total_steps += args.num_workers
 
         final_obs = Variable(torch.from_numpy(obs).float())
+        if cuda: final_obs = final_obs.cuda()
         _, final_values, _ = net(final_obs, net_states)
         steps.append((None, None, None, None, final_values))
 
-        actions, policies, values, returns, advantages = process_rollout(args, steps)
+        actions, policies, values, returns, advantages = process_rollout(args, steps, cuda)
 
         probs = Fnn.softmax(policies)
         log_probs = Fnn.log_softmax(policies)
@@ -63,16 +65,17 @@ def train(args, net, optimizer, cuda):
         optimizer.step()
         optimizer.zero_grad()
 
-        print(returns.sum())
+        print(total_steps)
 
         steps = []
         lstm_hs, lstm_cs = net_states
         net_states = Variable(lstm_hs.data), Variable(lstm_cs.data)
 
-def process_rollout(args, steps):
+def process_rollout(args, steps, cuda):
     _, _, _, _, last_values = steps[-1]
     returns = last_values.data
     advantages = torch.zeros(args.num_workers, 1)
+    if cuda: advantages = advantages.cuda()
     out = [None] * (len(steps) - 1)
 
     for t in reversed(range(len(steps) - 1)):
