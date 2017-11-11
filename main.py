@@ -25,7 +25,6 @@ net = AtariNet(env.action_space.n)
 optimizer = optim.Adam(net.parameters(), lr=args.lr)
 
 cuda = torch.cuda.is_available() and not args.no_cuda
-if cuda:
-    net = net.cuda()
+if cuda: net = net.cuda()
 
 train(args, net, optimizer, cuda)
