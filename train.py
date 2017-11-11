@@ -84,7 +84,7 @@ def process_rollout(args, steps, cuda):
 
         returns = rewards + returns * args.gamma * masks
 
-        deltas = rewards + next_values.data * args.gamma - values.data
+        deltas = rewards + next_values.data * args.gamma * masks - values.data
         advantages = advantages * args.gamma * args.lambd * masks + deltas
 
         out[t] = actions, policies, values, returns, advantages
