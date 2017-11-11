@@ -7,31 +7,39 @@ from torch.autograd import Variable
 from models import AtariNet
 from envs import create_atari_env, SubprocVecEnv
 
-def train(args, net, optimizer):
+def train(args, net, optimizer, cuda):
     env = SubprocVecEnv([lambda: create_atari_env(args.env_name)] * args.num_workers)
     obs = env.reset()
     net_states = net.make_state(count=args.num_workers)
+    if cuda:
+        lstm_hs, lstm_cs = net_states
+        net_states = lstm_hs.cuda(), lstm_cs.cuda()
 
     steps = []
     total_steps = 0
     while total_steps < args.total_steps:
         for _ in range(args.rollout_steps):
             obs = Variable(torch.from_numpy(obs).float())
+            if cuda: obs = obs.cuda()
 
             policies, values, net_states = net(obs, net_states)
 
             probs = Fnn.softmax(policies)
             actions = probs.multinomial().data
 
-            obs, rewards, dones, _ = env.step(actions.numpy())
+            obs, rewards, dones, _ = env.step(actions.cpu().numpy())
             obs = env.reset_done()
 
             # reset the LSTM state for done agents
             masks = (1. - torch.from_numpy(np.array(dones, dtype=np.float32))).unsqueeze(1)
+            if cuda: masks = masks.cuda()
+
             lstm_hs, lstm_cs = net_states
             net_states = lstm_hs * Variable(masks), lstm_cs * Variable(masks)
 
             rewards = torch.from_numpy(rewards).float()
+            if cuda: rewards = rewards.cuda()
+
             steps.append((rewards, masks, actions, policies, values))
 
         final_obs = Variable(torch.from_numpy(obs).float())

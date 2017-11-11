@@ -1,4 +1,5 @@
 import argparse
+import torch
 import torch.optim as optim
 
 from models import AtariNet
@@ -23,4 +24,8 @@ env = create_atari_env(args.env_name)
 net = AtariNet(env.action_space.n)
 optimizer = optim.Adam(net.parameters(), lr=args.lr)
 
-train(args, net, optimizer)
+cuda = torch.cuda.is_available() and not args.no_cuda
+if cuda:
+    net = net.cuda()
+
+train(args, net, optimizer, cuda)
