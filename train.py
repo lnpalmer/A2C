@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as Fnn
@@ -16,7 +17,6 @@ def train(args, net, optimizer):
     while total_steps < args.total_steps:
         for _ in range(args.rollout_steps):
             obs = Variable(torch.from_numpy(obs).float())
-            obs_in = obs
 
             policies, values, net_states = net(obs, net_states)
 
@@ -26,8 +26,13 @@ def train(args, net, optimizer):
             obs, rewards, dones, _ = env.step(actions.numpy())
             obs = env.reset_done()
 
+            # reset the LSTM state for done agents
+            masks = (1. - torch.from_numpy(np.array(dones, dtype=np.float32))).unsqueeze(1)
+            lstm_hs, lstm_cs = net_states
+            net_states = lstm_hs * Variable(masks), lstm_cs * Variable(masks)
+
             rewards = torch.from_numpy(rewards).float()
-            steps.append((rewards, dones, actions, policies, values))
+            steps.append((rewards, masks, actions, policies, values))
 
         final_obs = Variable(torch.from_numpy(obs).float())
         _, final_values, _ = net(final_obs, net_states)
@@ -63,13 +68,13 @@ def process_rollout(args, steps):
     out = [None] * (len(steps) - 1)
 
     for t in reversed(range(len(steps) - 1)):
-        rewards, dones, actions, policies, values = steps[t]
+        rewards, masks, actions, policies, values = steps[t]
         _, _, _, _, next_values = steps[t + 1]
 
-        returns = rewards + returns * args.gamma
+        returns = rewards + returns * args.gamma * masks
 
         deltas = rewards + next_values.data * args.gamma - values.data
-        advantages = advantages * args.gamma * args.lambd + deltas
+        advantages = advantages * args.gamma * args.lambd * masks + deltas
 
         out[t] = actions, policies, values, returns, advantages
 
