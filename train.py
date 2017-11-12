@@ -1,3 +1,4 @@
+import time
 import numpy as np
 import torch
 import torch.nn as nn
@@ -81,6 +82,8 @@ def train(args, net, optimizer, cuda):
         steps = []
         lstm_hs, lstm_cs = net_states
         net_states = Variable(lstm_hs.data), Variable(lstm_cs.data)
+
+        torch.manual_seed(int(time.time() * 1000))
 
 def process_rollout(args, steps, cuda):
     _, _, _, _, last_values = steps[-1]
