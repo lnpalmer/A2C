@@ -16,7 +16,7 @@ import time
 #     https://github.com/openai/baselines
 #     https://github.com/ikostrikov/pytorch-a3c
 # OpenAI environment utilities for Atari resizing, env vectorizing
-# Minor adaptation done for PyTorch compatibility
+# Minor adaptation done for PyTorch compatibility, misc. features
 # Uses ikostrikov's NormalizedEnv
 
 class VecEnv(object):
@@ -65,6 +65,10 @@ def worker(remote, env_fn_wrapper):
                 done = False
             else:
                 remote.send(ob)
+
+        # render support
+        elif cmd == 'render':
+            env.render()
 
         elif cmd == 'close':
             remote.close()
@@ -129,10 +133,14 @@ class SubprocVecEnv(VecEnv):
         for p in self.ps:
             p.join()
 
+    def render(self, ids):
+        for id in ids:
+            self.remotes[id].send(('render', None))
+
     @property
     def num_envs(self):
         return len(self.remotes)
-    
+
 def create_atari_env(env_id):
     env = gym.make(env_id)
     env = AtariRescale42x42(env)
