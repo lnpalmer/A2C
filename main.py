@@ -20,6 +20,8 @@ parser.add_argument('--entropy_coeff', type=float, default=0.01, help='entropy l
 parser.add_argument('--grad_norm_limit', type=float, default=40., help='gradient norm clipping threshold')
 parser.add_argument('--render', action='store_true', help='render training environments')
 parser.add_argument('--render-interval', type=int, default=4, help='number of steps between environment renders')
+parser.add_argument('--plot-reward', action='store_true', help='plot episode reward vs. total steps')
+parser.add_argument('--plot-group-size', type=int, default=80, help='number of episodes grouped into a single plot point')
 
 args = parser.parse_args()
 

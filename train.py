@@ -1,4 +1,6 @@
 import time
+import matplotlib
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
@@ -7,6 +9,7 @@ from torch.autograd import Variable
 
 from models import AtariNet
 from envs import create_atari_env, SubprocVecEnv
+from utils import mean_std_groups
 
 def train(args, net, optimizer, cuda):
     env = SubprocVecEnv([lambda: create_atari_env(args.env_name)] * args.num_workers)
@@ -17,10 +20,15 @@ def train(args, net, optimizer, cuda):
         lstm_hs, lstm_cs = net_states
         net_states = lstm_hs.cuda(), lstm_cs.cuda()
 
+    if args.plot_reward:
+        total_steps_plt = []
+        ep_reward_plt = []
+
     steps = []
     total_steps = 0
     ep_rewards = [0.] * args.num_workers
     render_timer = 0
+    plot_timer = 0
     while total_steps < args.total_steps:
         for _ in range(args.rollout_steps):
             obs = Variable(torch.from_numpy(obs).float())
@@ -44,23 +52,40 @@ def train(args, net, optimizer, cuda):
             lstm_hs, lstm_cs = net_states
             net_states = lstm_hs * Variable(masks), lstm_cs * Variable(masks)
 
-            rewards = torch.from_numpy(rewards).float().unsqueeze(1)
-            if cuda: rewards = rewards.cuda()
-
-            steps.append((rewards, masks, actions, policies, values))
-
             total_steps += args.num_workers
             for i, done in enumerate(dones):
                 ep_rewards[i] += rewards[i]
                 if done:
-                    print(ep_rewards[i])
+                    if args.plot_reward:
+                        total_steps_plt.append(total_steps)
+                        ep_reward_plt.append(ep_rewards[i])
                     ep_rewards[i] = 0
 
             if args.render:
-                render_timer += 1
+                render_timer += 1 # time on individual env steps
                 if render_timer == args.render_interval:
                     env.render(range(args.num_workers))
                     render_timer = 0
+
+            if args.plot_reward:
+                plot_timer += args.num_workers # time on total steps
+                if plot_timer == 100000:
+                    x_means, _, y_means, y_stds = mean_std_groups(np.array(total_steps_plt), np.array(ep_reward_plt), args.plot_group_size)
+                    fig = plt.figure()
+                    fig.set_size_inches(8, 6)
+                    plt.ticklabel_format(axis='x', style='sci', scilimits=(-2, 6))
+                    plt.errorbar(x_means, y_means, yerr=y_stds, ecolor='xkcd:blue', fmt='xkcd:black', capsize=5, elinewidth=1.5, mew=1.5, linewidth=1.5)
+                    plt.title('Training progress (%s)' % args.env_name)
+                    plt.xlabel('Total steps')
+                    plt.ylabel('Episode reward')
+                    plt.savefig('ep_reward.png', dpi=200)
+                    plt.clf()
+                    plot_timer = 0
+
+            rewards = torch.from_numpy(rewards).float().unsqueeze(1)
+            if cuda: rewards = rewards.cuda()
+
+            steps.append((rewards, masks, actions, policies, values))
 
         final_obs = Variable(torch.from_numpy(obs).float())
         if cuda: final_obs = final_obs.cuda()
@@ -89,6 +114,8 @@ def train(args, net, optimizer, cuda):
         steps = []
         lstm_hs, lstm_cs = net_states
         net_states = Variable(lstm_hs.data), Variable(lstm_cs.data)
+
+    env.close()
 
 def process_rollout(args, steps, cuda):
     # bootstrap discounted returns with final value estimates
