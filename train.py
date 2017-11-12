@@ -17,6 +17,8 @@ def train(args, net, optimizer, cuda):
 
     steps = []
     total_steps = 0
+    ep_rewards = [0.] * args.num_workers
+    render_timer = 0
     while total_steps < args.total_steps:
         for _ in range(args.rollout_steps):
             obs = Variable(torch.from_numpy(obs).float())
@@ -37,11 +39,22 @@ def train(args, net, optimizer, cuda):
             lstm_hs, lstm_cs = net_states
             net_states = lstm_hs * Variable(masks), lstm_cs * Variable(masks)
 
-            rewards = torch.from_numpy(rewards).float()
+            rewards = torch.from_numpy(rewards).float().unsqueeze(1)
             if cuda: rewards = rewards.cuda()
 
             steps.append((rewards, masks, actions, policies, values))
+
             total_steps += args.num_workers
+            for i, done in enumerate(dones):
+                ep_rewards[i] += rewards[i]
+                if done:
+                    print(ep_rewards[i])
+                    ep_rewards[i] = 0
+
+            render_timer += 1
+            if render_timer == 4:
+                env.render(range(args.num_workers))
+                render_timer = 0
 
         final_obs = Variable(torch.from_numpy(obs).float())
         if cuda: final_obs = final_obs.cuda()
@@ -64,8 +77,6 @@ def train(args, net, optimizer, cuda):
         nn.utils.clip_grad_norm(net.parameters(), 40.)
         optimizer.step()
         optimizer.zero_grad()
-
-        print(total_steps)
 
         steps = []
         lstm_hs, lstm_cs = net_states
