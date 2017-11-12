@@ -10,6 +10,7 @@ from envs import create_atari_env, SubprocVecEnv
 
 def train(args, net, optimizer, cuda):
     env = SubprocVecEnv([lambda: create_atari_env(args.env_name)] * args.num_workers)
+
     obs = env.reset()
     net_states = net.make_state(count=args.num_workers)
     if cuda:
@@ -25,18 +26,21 @@ def train(args, net, optimizer, cuda):
             obs = Variable(torch.from_numpy(obs).float())
             if cuda: obs = obs.cuda()
 
+            # network forward pass
             policies, values, net_states = net(obs, net_states)
 
             probs = Fnn.softmax(policies)
             actions = probs.multinomial().data
 
+            # gather env data, reset done envs and update their obs
             obs, rewards, dones, _ = env.step(actions.cpu().numpy())
             obs = env.reset_done()
 
-            # reset the LSTM state for done agents
+            # reset the LSTM state for done envs
             masks = (1. - torch.from_numpy(np.array(dones, dtype=np.float32))).unsqueeze(1)
             if cuda: masks = masks.cuda()
 
+            # zero LSTM states for done envs
             lstm_hs, lstm_cs = net_states
             net_states = lstm_hs * Variable(masks), lstm_cs * Variable(masks)
 
@@ -64,6 +68,7 @@ def train(args, net, optimizer, cuda):
 
         actions, policies, values, returns, advantages = process_rollout(args, steps, cuda)
 
+        # calculate action probabilities
         probs = Fnn.softmax(policies)
         log_probs = Fnn.log_softmax(policies)
         log_action_probs = log_probs.gather(1, Variable(actions))
@@ -75,23 +80,29 @@ def train(args, net, optimizer, cuda):
         loss = policy_loss + value_loss * args.value_coeff + entropy_loss * args.entropy_coeff
         loss.backward()
 
-        nn.utils.clip_grad_norm(net.parameters(), 40.)
+        nn.utils.clip_grad_norm(net.parameters(), args.grad_norm_limit)
         optimizer.step()
         optimizer.zero_grad()
 
+        # cut LSTM state autograd connection to previous rollout
         steps = []
         lstm_hs, lstm_cs = net_states
         net_states = Variable(lstm_hs.data), Variable(lstm_cs.data)
 
+        # change seed after every rollout
         torch.manual_seed(int(time.time() * 1000))
 
 def process_rollout(args, steps, cuda):
+    # bootstrap discounted returns with final value estimates
     _, _, _, _, last_values = steps[-1]
     returns = last_values.data
+
     advantages = torch.zeros(args.num_workers, 1)
     if cuda: advantages = advantages.cuda()
+
     out = [None] * (len(steps) - 1)
 
+    # run Generalized Advantage Estimation, calculate returns, advantages
     for t in reversed(range(len(steps) - 1)):
         rewards, masks, actions, policies, values = steps[t]
         _, _, _, _, next_values = steps[t + 1]
@@ -103,4 +114,5 @@ def process_rollout(args, steps, cuda):
 
         out[t] = actions, policies, values, returns, advantages
 
+    # return data as batched Tensors, Variables
     return map(lambda x: torch.cat(x, 0), zip(*out))
