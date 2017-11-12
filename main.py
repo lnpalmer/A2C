@@ -18,6 +18,8 @@ parser.add_argument('--lambd', type=float, default=1.00, help='lambda parameter 
 parser.add_argument('--value_coeff', type=float, default=0.5, help='value loss coeffecient')
 parser.add_argument('--entropy_coeff', type=float, default=0.01, help='entropy loss coeffecient')
 parser.add_argument('--grad_norm_limit', type=float, default=40., help='gradient norm clipping threshold')
+parser.add_argument('--render', action='store_true', help='render training environments')
+parser.add_argument('--render-interval', type=int, default=4, help='number of steps between environment renders')
 
 args = parser.parse_args()
 

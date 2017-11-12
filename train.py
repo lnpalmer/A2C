@@ -56,10 +56,11 @@ def train(args, net, optimizer, cuda):
                     print(ep_rewards[i])
                     ep_rewards[i] = 0
 
-            render_timer += 1
-            if render_timer == 4:
-                env.render(range(args.num_workers))
-                render_timer = 0
+            if args.render:
+                render_timer += 1
+                if render_timer == args.render_interval:
+                    env.render(range(args.num_workers))
+                    render_timer = 0
 
         final_obs = Variable(torch.from_numpy(obs).float())
         if cuda: final_obs = final_obs.cuda()
