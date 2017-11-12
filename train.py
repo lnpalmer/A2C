@@ -90,9 +90,6 @@ def train(args, net, optimizer, cuda):
         lstm_hs, lstm_cs = net_states
         net_states = Variable(lstm_hs.data), Variable(lstm_cs.data)
 
-        # change seed after every rollout
-        torch.manual_seed(int(time.time() * 1000))
-
 def process_rollout(args, steps, cuda):
     # bootstrap discounted returns with final value estimates
     _, _, _, _, last_values = steps[-1]
