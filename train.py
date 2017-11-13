@@ -1,5 +1,6 @@
 import time
 import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -80,6 +81,7 @@ def train(args, net, optimizer, cuda):
                     plt.ylabel('Episode reward')
                     plt.savefig('ep_reward.png', dpi=200)
                     plt.clf()
+                    plt.close()
                     plot_timer = 0
 
             rewards = torch.from_numpy(rewards).float().unsqueeze(1)
