@@ -14,8 +14,21 @@ Example training curve for `PongDeterministic-v3`:
 ![Training curve](./ep_reward.png)
 
 ## References
-[OpenAI/baselines](https://github.com/openai/baselines)
 
-[OpenAI/universe-starter-agent](https://github.com/openai/universe-starter-agent)
+#### Code
+
+This code uses Gym environment utilities from these repos:
+
+[openai/baselines](https://github.com/openai/baselines)
+
+[openai/universe-starter-agent](https://github.com/openai/universe-starter-agent)
 
 [ikostrikov/pytorch-a3c](https://github.com/ikostrikov/pytorch-a3c)
+
+#### Literature
+
+[High-Dimensional Continuous Control Using Generalized Advantage Estimation](https://arxiv.org/abs/1506.02438)
+
+[Asynchronous Methods for Deep Reinforcement Learning](https://arxiv.org/abs/1602.01783)
+
+[OpenAI Baselines: ACKTR & A2C](https://blog.openai.com/baselines-acktr-a2c/)
