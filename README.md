@@ -9,6 +9,10 @@ python main.py BreakoutDeterministic-v3 --num-workers 8 --render
 ````
 This will train the agent on BreakoutDeterministic-v3 with 8 parallel environments, and render each environment. Rendering Gym environments in subprocesses is only supported on Linux as of November 2017.
 
+Example training curve for `PongDeterministic-v3`:
+
+![Training curve](./ep_reward.png)
+
 ## References
 [OpenAI/baselines](https://github.com/openai/baselines)
 
