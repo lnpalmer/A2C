@@ -8,18 +8,10 @@ import torch.nn as nn
 import torch.nn.functional as Fnn
 from torch.autograd import Variable
 
-from models import AtariNet
-from envs import create_atari_env, SubprocVecEnv
 from utils import mean_std_groups
 
-def train(args, net, optimizer, cuda):
-    env = SubprocVecEnv([lambda: create_atari_env(args.env_name)] * args.num_workers)
-
+def train(args, net, optimizer, env, cuda):
     obs = env.reset()
-    net_states = net.make_state(count=args.num_workers)
-    if cuda:
-        lstm_hs, lstm_cs = net_states
-        net_states = lstm_hs.cuda(), lstm_cs.cuda()
 
     if args.plot_reward:
         total_steps_plt = []
@@ -32,26 +24,21 @@ def train(args, net, optimizer, cuda):
     plot_timer = 0
     while total_steps < args.total_steps:
         for _ in range(args.rollout_steps):
-            obs = Variable(torch.from_numpy(obs).float())
+            obs = Variable(torch.from_numpy(obs.transpose((0, 3, 1, 2))).float() / 255.)
             if cuda: obs = obs.cuda()
 
             # network forward pass
-            policies, values, net_states = net(obs, net_states)
+            policies, values = net(obs)
 
             probs = Fnn.softmax(policies)
             actions = probs.multinomial().data
 
             # gather env data, reset done envs and update their obs
             obs, rewards, dones, _ = env.step(actions.cpu().numpy())
-            obs = env.reset_done()
 
             # reset the LSTM state for done envs
             masks = (1. - torch.from_numpy(np.array(dones, dtype=np.float32))).unsqueeze(1)
             if cuda: masks = masks.cuda()
-
-            # zero LSTM states for done envs
-            lstm_hs, lstm_cs = net_states
-            net_states = lstm_hs * Variable(masks), lstm_cs * Variable(masks)
 
             total_steps += args.num_workers
             for i, done in enumerate(dones):
@@ -61,12 +48,6 @@ def train(args, net, optimizer, cuda):
                         total_steps_plt.append(total_steps)
                         ep_reward_plt.append(ep_rewards[i])
                     ep_rewards[i] = 0
-
-            if args.render:
-                render_timer += 1 # time on individual env steps
-                if render_timer == args.render_interval:
-                    env.render(range(args.num_workers))
-                    render_timer = 0
 
             if args.plot_reward:
                 plot_timer += args.num_workers # time on total steps
@@ -89,9 +70,9 @@ def train(args, net, optimizer, cuda):
 
             steps.append((rewards, masks, actions, policies, values))
 
-        final_obs = Variable(torch.from_numpy(obs).float())
+        final_obs = Variable(torch.from_numpy(obs.transpose((0, 3, 1, 2))).float() / 255.)
         if cuda: final_obs = final_obs.cuda()
-        _, final_values, _ = net(final_obs, net_states)
+        _, final_values = net(final_obs)
         steps.append((None, None, None, None, final_values))
 
         actions, policies, values, returns, advantages = process_rollout(args, steps, cuda)
@@ -114,8 +95,6 @@ def train(args, net, optimizer, cuda):
 
         # cut LSTM state autograd connection to previous rollout
         steps = []
-        lstm_hs, lstm_cs = net_states
-        net_states = Variable(lstm_hs.data), Variable(lstm_cs.data)
 
     env.close()
 

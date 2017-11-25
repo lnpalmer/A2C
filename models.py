@@ -3,85 +3,102 @@ import torch
 import torch.nn as nn
 from torch.autograd import Variable
 
-def normalized_columns(shape):
-    weights = torch.randn(shape)
-    weights *= 1. / torch.sqrt(weights.pow(2).sum(1, keepdim=True))
-    return weights
 
-def initializer(module):
-    """ Parameter initializer for AtariNet
+def ortho_weights(shape, scale=1.):
+    """ PyTorch port of ortho_init from baselines.a2c.utils """
+    shape = tuple(shape)
 
-    Initializes Linear, Conv2d, and LSTMCell weights
+    if len(shape) == 2:
+        flat_shape = shape[1], shape[0]
+    elif len(shape) == 4:
+        flat_shape = (np.prod(shape[1:]), shape[0])
+    else:
+        raise NotImplementedError
+
+    a = np.random.normal(0., 1., flat_shape)
+    u, _, v = np.linalg.svd(a, full_matrices=False)
+    q = u if u.shape == flat_shape else v
+    q = q.transpose().copy().reshape(shape)
+
+    if len(shape) == 2:
+        return torch.from_numpy((scale * q).astype(np.float32))
+    if len(shape) == 4:
+        return torch.from_numpy((scale * q[:, :shape[1], :shape[2]]).astype(np.float32))
+
+
+def atari_initializer(module):
+    """ Parameter initializer for Atari models
+
+    Initializes Linear, Conv2d, and LSTM weights.
     """
     classname = module.__class__.__name__
 
     if classname == 'Linear':
-        weight_shape = module.weight.data.size()
-        fan_in = weight_shape[1]
-        fan_out = weight_shape[0]
-        w_bound = np.sqrt(6. / (fan_in + fan_out))
-        module.weight.data.uniform_(-w_bound, w_bound)
+        module.weight.data = ortho_weights(module.weight.data.size(), scale=np.sqrt(2.))
         module.bias.data.zero_()
 
     elif classname == 'Conv2d':
-        weight_shape = module.weight.data.size()
-        fan_in = weight_shape[0] * weight_shape[2] * weight_shape[3]
-        fan_out = weight_shape[0] * weight_shape[1]
-        w_bound = np.sqrt(6. / (fan_in + fan_out))
-        module.weight.data.uniform_(-w_bound, w_bound)
+        module.weight.data = ortho_weights(module.weight.data.size(), scale=np.sqrt(2.))
         module.bias.data.zero_()
 
-    elif classname == 'LSTMCell':
-        module.bias_ih.data.zero_()
-        module.bias_hh.data.zero_()
+    elif classname == 'LSTM':
+        for name, param in module.named_parameters():
+            if 'weight_ih' in name:
+                param.data = ortho_weights(param.data.size(), scale=1.)
+            if 'weight_hh' in name:
+                param.data = ortho_weights(param.data.size(), scale=1.)
+            if 'bias' in name:
+                param.data.zero_()
 
-class AtariNet(nn.Module):
-    """ Basic convolutional+LSTM network for Atari environments
 
-    Equivalent to OpenAI's universe-starter-agent
-    """
+class AtariCNN(nn.Module):
+    def __init__(self, num_actions):
+        """ Basic convolutional actor-critic network for Atari 2600 games
 
-    def __init__(self, policy_size, lstm_size=256):
+        Equivalent to the network in the original DQN paper.
+
+        Args:
+            num_actions (int): the number of available discrete actions
+        """
         super().__init__()
 
-        self.conv = nn.Sequential(nn.Conv2d(1, 32, 3, stride=2, padding=1),
-                                  nn.ELU(inplace=True),
-                                  nn.Conv2d(32, 32, 3, stride=2, padding=1),
-                                  nn.ELU(inplace=True),
-                                  nn.Conv2d(32, 32, 3, stride=2, padding=1),
-                                  nn.ELU(inplace=True),
-                                  nn.Conv2d(32, 32, 3, stride=2, padding=1),
-                                  nn.ELU(inplace=True))
+        self.conv = nn.Sequential(nn.Conv2d(4, 32, 8, stride=4),
+                                  nn.ReLU(),
+                                  nn.Conv2d(32, 64, 4, stride=2),
+                                  nn.ReLU(),
+                                  nn.Conv2d(64, 64, 3, stride=1),
+                                  nn.ReLU())
 
-        self.lstm = nn.LSTMCell(32 * 3 * 3, lstm_size)
+        self.fc = nn.Sequential(nn.Linear(64 * 7 * 7, 512),
+                                nn.ReLU())
 
-        self.policy = nn.Linear(lstm_size, policy_size)
-        self.value = nn.Linear(lstm_size, 1)
+        self.pi = nn.Linear(512, num_actions)
+        self.v = nn.Linear(512, 1)
 
-        self.policy_size = policy_size
-        self.lstm_size = lstm_size
+        self.num_actions = num_actions
 
-        # initialize parameters
-        self.apply(initializer)
-        self.policy.weight.data = \
-            normalized_columns(self.policy.weight.size()) * 0.01
+        # parameter initialization
+        self.apply(atari_initializer)
+        self.pi.weight.data = ortho_weights(self.pi.weight.size(), scale=.01)
+        self.v.weight.data = ortho_weights(self.v.weight.size())
 
-        self.value.weight.data = normalized_columns(self.value.weight.size())
+    def forward(self, conv_in):
+        """ Module forward pass
 
-    def forward(self, conv_in, lstm_state_in):
-        """ PyTorch forward pass """
-        conv_out = self.conv(conv_in)
+        Args:
+            conv_in (Variable): convolutional input, shaped [N x 4 x 84 x 84]
 
-        lstm_in = conv_out.view(-1, 3 * 3 * 32)
-        lstm_state_out = self.lstm(lstm_in, lstm_state_in)
-        lstm_out, _ = lstm_state_out
+        Returns:
+            pi (Variable): action probability logits, shaped [N x self.num_actions]
+            v (Variable): value predictions, shaped [N x 1]
+        """
+        N = conv_in.size()[0]
 
-        policy = self.policy(lstm_out)
-        value = self.value(lstm_out)
+        conv_out = self.conv(conv_in).view(N, 64 * 7 * 7)
 
-        return policy, value, lstm_state_out
+        fc_out = self.fc(conv_out)
 
-    def make_state(self, count=1):
-        """ Makes an initial network state """
-        return (Variable(torch.zeros(count, self.lstm_size)),
-                Variable(torch.zeros(count, self.lstm_size)))
+        pi_out = self.pi(fc_out)
+        v_out = self.v(fc_out)
+
+        return pi_out, v_out

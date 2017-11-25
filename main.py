@@ -1,9 +1,11 @@
 import argparse
 import torch
 import torch.optim as optim
+from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
+from baselines.common.vec_env.vec_frame_stack import VecFrameStack
 
-from models import AtariNet
-from envs import create_atari_env
+from models import AtariCNN
+from envs import make_env, RenderSubprocVecEnv
 from train import train
 
 parser = argparse.ArgumentParser(description='A2C (Advantage Actor-Critic)')
@@ -22,14 +24,23 @@ parser.add_argument('--render', action='store_true', help='render training envir
 parser.add_argument('--render-interval', type=int, default=4, help='number of steps between environment renders')
 parser.add_argument('--plot-reward', action='store_true', help='plot episode reward vs. total steps')
 parser.add_argument('--plot-group-size', type=int, default=80, help='number of episodes grouped into a single plot point')
+parser.add_argument('--seed', type=int, default=0, help='random seed')
 
 args = parser.parse_args()
 
-env = create_atari_env(args.env_name)
-net = AtariNet(env.action_space.n)
+env_fns = []
+for rank in range(args.num_workers):
+    env_fns.append(lambda: make_env(args.env_name, rank, args.seed + rank))
+if args.render:
+    venv = RenderSubprocVecEnv(env_fns, args.render_interval)
+else:
+    venv = SubprocVecEnv(env_fns)
+venv = VecFrameStack(venv, 4)
+
+net = AtariCNN(venv.action_space.n)
 optimizer = optim.Adam(net.parameters(), lr=args.lr)
 
 cuda = torch.cuda.is_available() and not args.no_cuda
 if cuda: net = net.cuda()
 
-train(args, net, optimizer, cuda)
+train(args, net, optimizer, venv, cuda)

@@ -1,82 +1,45 @@
-import cv2
-from torch.multiprocessing import Process, Pipe
-from gym.spaces.box import Box
 import numpy as np
 import gym
 from gym import spaces
-import logging
-import universe
-from universe import vectorized
-from universe.wrappers import BlockingReset, GymCoreAction, EpisodeID, Unvectorize, Vectorize, Vision, Logger
-from universe import spaces as vnc_spaces
-from universe.spaces.vnc_event import keycode
-import time
+from baselines.common.atari_wrappers import make_atari, wrap_deepmind
+from baselines.common.vec_env import VecEnv
+from multiprocessing import Process, Pipe
 
-# cf: https://github.com/openai/universe-starter-agent
-#     https://github.com/openai/baselines
-#     https://github.com/ikostrikov/pytorch-a3c
-# OpenAI environment utilities for Atari resizing, env vectorizing
-# Minor adaptation done for PyTorch compatibility, misc. features
-# Uses ikostrikov's NormalizedEnv
+# cf https://github.com/openai/baselines
 
-class VecEnv(object):
-    """
-    Vectorized environment base class
-    """
-    def step(self, vac):
-        """
-        Apply sequence of actions to sequence of environments
-        actions -> (observations, rewards, news)
+def make_env(env_name, rank, seed):
+    env = make_atari(env_name)
+    env.seed(seed + rank)
+    env = wrap_deepmind(env)
+    return env
 
-        where 'news' is a boolean vector indicating whether each element is new.
-        """
-        raise NotImplementedError
-    def reset(self):
-        """
-        Reset all environments
-        """
-        raise NotImplementedError
-    def close(self):
-        pass
 
-def worker(remote, env_fn_wrapper):
+def worker(remote, parent_remote, env_fn_wrapper):
+    parent_remote.close()
     env = env_fn_wrapper.x()
-    done = False
-    ob = None
     while True:
         cmd, data = remote.recv()
-
-        # modified not to automatically reset done envs
         if cmd == 'step':
-            if not done:
-                ob, reward, done, info = env.step(data)
-                remote.send((ob, reward, done, info))
-            else:
-                ob = np.zeros(env.observation_space.shape)
-                remote.send((ob, 0, done, None))
+            ob, reward, done, info = env.step(data)
+            if done:
+                ob = env.reset()
+            remote.send((ob, reward, done, info))
         elif cmd == 'reset':
             ob = env.reset()
             remote.send(ob)
-            done = False
-        elif cmd == 'reset_done':
-            if done:
-                ob = env.reset()
-                remote.send(ob)
-                done = False
-            else:
-                remote.send(ob)
-
-        # render support
-        elif cmd == 'render':
-            env.render()
-
+        elif cmd == 'reset_task':
+            ob = env.reset_task()
+            remote.send(ob)
         elif cmd == 'close':
             remote.close()
             break
         elif cmd == 'get_spaces':
             remote.send((env.action_space, env.observation_space))
+        elif cmd == 'render':
+            env.render()
         else:
             raise NotImplementedError
+
 
 class CloudpickleWrapper(object):
     """
@@ -91,27 +54,42 @@ class CloudpickleWrapper(object):
         import pickle
         self.x = pickle.loads(ob)
 
-class SubprocVecEnv(VecEnv):
-    def __init__(self, env_fns):
-        """
+
+class RenderSubprocVecEnv(VecEnv):
+    def __init__(self, env_fns, render_interval):
+        """ Minor addition to SubprocVecEnv, automatically renders environments
+
         envs: list of gym environments to run in subprocesses
         """
+        self.closed = False
         nenvs = len(env_fns)
         self.remotes, self.work_remotes = zip(*[Pipe() for _ in range(nenvs)])
-        self.ps = [Process(target=worker, args=(work_remote, CloudpickleWrapper(env_fn)))
-            for (work_remote, env_fn) in zip(self.work_remotes, env_fns)]
+        self.ps = [Process(target=worker, args=(work_remote, remote, CloudpickleWrapper(env_fn)))
+            for (work_remote, remote, env_fn) in zip(self.work_remotes, self.remotes, env_fns)]
         for p in self.ps:
+            p.daemon = True # if the main process crashes, we should not cause things to hang
             p.start()
+        for remote in self.work_remotes:
+            remote.close()
 
         self.remotes[0].send(('get_spaces', None))
         self.action_space, self.observation_space = self.remotes[0].recv()
 
+        self.render_interval = render_interval
+        self.render_timer = 0
 
     def step(self, actions):
         for remote, action in zip(self.remotes, actions):
             remote.send(('step', action))
         results = [remote.recv() for remote in self.remotes]
         obs, rews, dones, infos = zip(*results)
+
+        self.render_timer += 1
+        if self.render_timer == self.render_interval:
+            for remote in self.remotes:
+                remote.send(('render', None))
+            self.render_timer = 0
+
         return np.stack(obs), np.stack(rews), np.stack(dones), infos
 
     def reset(self):
@@ -119,71 +97,21 @@ class SubprocVecEnv(VecEnv):
             remote.send(('reset', None))
         return np.stack([remote.recv() for remote in self.remotes])
 
-    def reset_done(self):
-        """
-        Resets done envs
-        """
+    def reset_task(self):
         for remote in self.remotes:
-            remote.send(('reset_done', None))
+            remote.send(('reset_task', None))
         return np.stack([remote.recv() for remote in self.remotes])
 
     def close(self):
+        if self.closed:
+            return
+
         for remote in self.remotes:
             remote.send(('close', None))
         for p in self.ps:
             p.join()
-
-    def render(self, ids):
-        for id in ids:
-            self.remotes[id].send(('render', None))
+        self.closed = True
 
     @property
     def num_envs(self):
         return len(self.remotes)
-
-def create_atari_env(env_id):
-    env = gym.make(env_id)
-    env = AtariRescale42x42(env)
-    env = NormalizedEnv(env)
-    return env
-
-def _process_frame42(frame):
-    frame = frame[34:34+160, :160]
-    # Resize by half, then down to 42x42 (essentially mipmapping). If
-    # we resize directly we lose pixels that, when mapped to 42x42,
-    # aren't close enough to the pixel boundary.
-    frame = cv2.resize(frame, (80, 80))
-    frame = cv2.resize(frame, (42, 42))
-    frame = frame.mean(2)
-    frame = frame.astype(np.float32)
-    frame *= (1.0 / 255.0)
-    frame = np.reshape(frame, [42, 42, 1]).transpose((2, 0, 1))
-    return frame
-
-class AtariRescale42x42(gym.ObservationWrapper):
-    def __init__(self, env=None):
-        super(AtariRescale42x42, self).__init__(env)
-        self.observation_space = Box(0.0, 1.0, [1, 42, 42])
-
-    def _observation(self, observation):
-        return _process_frame42(observation)
-
-class NormalizedEnv(gym.ObservationWrapper):
-    def __init__(self, env=None):
-        super(NormalizedEnv, self).__init__(env)
-        self.state_mean = 0
-        self.state_std = 0
-        self.alpha = 0.9999
-        self.num_steps = 0
-
-    def _observation(self, observation):
-        self.num_steps += 1
-        self.state_mean = self.state_mean * self.alpha + \
-            observation.mean() * (1 - self.alpha)
-        self.state_std = self.state_std * self.alpha + \
-            observation.std() * (1 - self.alpha)
-
-        unbiased_mean = self.state_mean / (1 - pow(self.alpha, self.num_steps))
-        unbiased_std = self.state_std / (1 - pow(self.alpha, self.num_steps))
-
-        return (observation - unbiased_mean) / (unbiased_std + 1e-8)
